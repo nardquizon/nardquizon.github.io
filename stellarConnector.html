@@ -1,0 +1,273 @@
+<html>
+<head>
+<title>Stellar Connector</title>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js" type="text/javascript"></script>
+<script src="https://connectors.tableau.com/libs/tableauwdc-1.1.1.js" type="text/javascript"></script>
+<script type="text/javascript">
+ 
+(function() {
+
+  var myConnector = tableau.makeConnector();
+
+  myConnector.init = function () {
+    tableau.connectionName = 'Stellar API Data';
+    tableau.initCallback();
+    // if(tableau.phase == tableau.phaseEnum.interactivePhase || tableau.phase == tableau.phaseEnum.authPhase) {
+    //     tableau.submit();
+    // }
+  };
+
+  myConnector.getColumnHeaders = function() {
+    _retrieveCsvData(function (tableData) {
+      var tmp = tableData.headers;
+      var fieldNames = [];
+      var fieldTypes = [];
+
+      for (var fieldName in tmp) {
+        if (tmp.hasOwnProperty(fieldName)) {
+          fieldNames.push(fieldName);
+          fieldTypes.push(tmp[fieldName]);
+        }
+      }
+      tableau.headersCallback(fieldNames, fieldTypes); // tell tableau about the fields and their types
+    });
+  };
+      
+  myConnector.getTableData = function (lastRecordToken) {
+    _retrieveCsvData(function (tableData) {
+      var rowData = tableData.rowData;
+      tableau.dataCallback(rowData, rowData.length.toString(), false);
+    });
+  };
+
+  tableau.registerConnector(myConnector);
+})();
+
+function _retrieveCsvData(retrieveDataCallback) {
+  if (!window.cachedTableData) {
+    var conData = JSON.parse(tableau.connectionData);
+    var csvString = conData.csvString;
+    if (conData.csvUrl) {
+      var successCallback = function(data) 
+      {
+
+        var dataJSON = JSON.parse(data);
+        window.cachedTableData = _jsToTable(dataJSON.data.result.trim());
+        retrieveDataCallback(window.cachedTableData);
+      };
+      // Go get the csv data
+      _basicAjaxRequest1(conData.csvUrl, successCallback);
+      return;
+    }
+    try {
+      tableau.log(csvString);
+      window.cachedTableData = _jsToTable(csvString.trim());
+    }
+    catch (e) {
+      tableau.abortWithError("unable to parse csv data");
+      return;
+    }
+  }
+  retrieveDataCallback(window.cachedTableData);
+}
+
+// There are a lot of ways to handle URLS. Sometimes we'll need workarounds for CORS. These
+// methods chain together a series of attempts to get the data at the given url
+
+function _ajaxRequestHelper(url, successCallback, conUrl, nextFunction, specialSuccessCallback){
+  specialSuccessCallback = specialSuccessCallback || successCallback;
+  var xhr = $.ajax({ 
+    url: conUrl,
+    dataType: 'text', 
+    async: false,
+    type: 'PUT',
+    beforeSend: function (request)
+    {
+        request.setRequestHeader("Accept", "application/vnd.stellar-v1+json");
+        request.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+    },
+    //data: "access_token=f250e68bc061c70e8fd41f8cf06f6c6f24399ae31cc7517f807b1b2968f1cfbe",
+    data : "access_token=50ae50d4bdb1a8db92f1f148ebae0e83188827fa736238e0357aee9a238a8e29",
+    success: specialSuccessCallback,
+    error: function()
+    {
+      nextFunction(url, successCallback);
+    }
+  });
+
+}
+
+// try the straightforward request
+function _basicAjaxRequest1(url, successCallback){
+  _ajaxRequestHelper(url, successCallback, url, _giveUpOnUrl9);
+}
+
+function _giveUpOnUrl9(url, successCallback) {
+  tableau.abortWithError("Could not load url: " + url);
+}
+
+// Takes a hierarchical javascript object and tries to turn it into a table
+// Returns an object with headers and the row level data
+function _jsToTable(objectBlob) {
+  var rowData = CSVToArray(String(objectBlob), ",")
+  var headers = _extractHeaders(rowData);
+
+  return {"headers":headers, "rowData":rowData};
+}
+
+// This will parse a delimited string into an array of
+// arrays. The default delimiter is the comma, but this
+// can be overriden in the second argument.
+function CSVToArray( strData, strDelimiter ){
+    // Check to see if the delimiter is defined. If not,
+    // then default to comma.
+    strDelimiter = (strDelimiter || ",");
+
+    // Create a regular expression to parse the CSV values.
+    var objPattern = new RegExp(
+        (
+            // Delimiters.
+            "(\\" + strDelimiter + "|\\r?\\n|\\r|^)" +
+
+            // Quoted fields.
+            "(?:\"([^\"]*(?:\"\"[^\"]*)*)\"|" +
+
+            // Standard fields.
+            //"([^\"\\" + strDelimiter + "\\r\\n]*))"
+            "([^\\" + strDelimiter + "\\r\\n]*))"
+        ),
+        "gi"
+        );
+
+    // Create an array to hold our data. Give the array
+    // a default empty first row.
+    var arrData = [[]];
+
+    // Create an array to hold our individual pattern
+    // matching groups.
+    var arrMatches = null;
+
+    // Keep looping over the regular expression matches
+    // until we can no longer find a match.
+    while (arrMatches = objPattern.exec(strData)){
+        // Get the delimiter that was found.
+        var strMatchedDelimiter = arrMatches[1];
+        // Check to see if the given delimiter has a length
+        // (is not the start of string) and if it matches
+        // field delimiter. If id does not, then we know
+        // that this delimiter is a row delimiter.
+        if (strMatchedDelimiter.length &&
+            strMatchedDelimiter !== strDelimiter){
+            // Since we have reached a new row of data,
+            // add an empty row to our data array.
+            arrData.push([]);
+        }
+
+        var strMatchedValue;
+
+        // Now that we have our delimiter out of the way,
+        // let's check to see which kind of value we
+        // captured (quoted or unquoted).
+        if (arrMatches[2]){
+            // We found a quoted value. When we capture
+            // this value, unescape any double quotes.
+            strMatchedValue = arrMatches[2].replace(
+                new RegExp( "\"\"", "g" ),
+                "\""
+                );
+        } else {
+            // We found a non-quoted value.
+            strMatchedValue = arrMatches[3];
+        }
+        // Now that we have our value string, let's add
+        // it to the data array.
+        arrData[arrData.length - 1].push(strMatchedValue);
+    }
+    // Return the parsed data.
+    return(arrData);
+}
+
+//Given an array of js objects, returns a map from data column name to data type
+function _extractHeaders(rowData) {
+  var toRet = {};
+  var keys = [];
+
+  for (var row = 0; row < rowData.length; row++) {
+    for (var row2 = 0; row2 < rowData[row].length; row2++)
+    {
+      if (row == 0)
+      {
+        keys[row2] = rowData[row][row2];
+      }
+      else
+      {
+        toRet[keys[row2]] = _determineType(rowData[row][row2]);
+      }
+
+    }
+
+    if (row >= 1)
+    {
+        break;
+    }
+  }
+
+  // remove header from body, to avoid duplicate
+  rowData.splice(0,1);
+  return toRet;
+}
+
+// Given a primitive, tries to make a guess at the data type of the input
+function _determineType(primitive) {
+  // possible types: 'float', 'date', 'datetime', 'bool', 'string', 'int'
+  if (parseInt(primitive) == primitive && parseInt(primitive).toString() == primitive.toString()) return 'int';
+  if (parseFloat(primitive) == primitive) return 'float';
+  if (isFinite(new Date(primitive).getTime())) return 'datetime';
+  return 'string';
+}
+
+function _submitToCsvToTableau(csvString, csvUrl, user, pass) {
+    var conData = {"csvString" : csvString, "csvUrl": csvUrl, "user" : user, "pass" : pass};
+    tableau.connectionData = JSON.stringify(conData);
+    tableau.submit();  
+}
+
+$(document).ready(function(){
+  var cancel = function (e) {    
+      e.stopPropagation();
+      e.preventDefault();
+  }
+  $("#inputForm").submit(function(e) { // This event fires when a button is clicked
+    // Since we use a form for input, make sure to stop the default form behavior
+    cancel(e);
+    var csvUrl = $('input[name=csvUrl]')[0].value.trim() + $('input[name=queryName]')[0].value.trim() + "/execute";
+    var user = "";
+    var pass = "";
+    var csvString = "";
+    _submitToCsvToTableau(csvString, csvUrl, user, pass);
+  });
+    // var csvUrl = "http://localhost:8080/console/api/bigdata_queries/" + getURLParameter('query_name') + "/execute";
+    // var user = "";
+    // var pass = "";
+    // var csvString = "";
+    // tableau.log("csvUrl " + csvUrl);
+    // _submitToCsvToTableau(csvString, csvUrl, user, pass);
+});
+
+function getURLParameter(name) {
+  return decodeURIComponent((new RegExp('[?|&]' + name + '=' + '([^&;]+?)(&|#|;|$)').exec(location.search) || [null, ''])[1].replace(/\+/g, '%20')) || null;
+}
+
+</script>
+</head>
+<body>
+
+<form id="inputForm" action="GET">
+  Query Name/ID:
+  <input type="text" name="queryName" size="30" value='35'/>
+  <input type="hidden" name="csvUrl" value='http://growingtree.demostellar.com/console/api/bigdata_queries/'>
+  <input type="submit" value="Submit">
+</form>
+</body>
+</html>
+
