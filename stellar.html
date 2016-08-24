@@ -1,8 +1,61 @@
 <html>
 <head>
 <title>Stellar Connector</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Latest compiled and minified CSS -->
+<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.5/css/bootstrap.min.css">
+<!-- Optional theme -->
+<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.5/css/bootstrap-theme.min.css">
 <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js" type="text/javascript"></script>
 <script src="https://connectors.tableau.com/libs/tableauwdc-1.1.1.js" type="text/javascript"></script>
+<!-- Use to access cookie storage to grab access token -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/js-cookie/2.0.2/js.cookie.min.js" type="text/javascript"></script>
+<!--<script src="https://connectors.tableau.com/libs/tableauwdc-2.0.latest.js" type="text/javascript"></script>-->
+<link rel="stylesheet" href="https://code.jquery.com/ui/1.12.0/themes/base/jquery-ui.css">
+<script src="https://code.jquery.com/jquery-1.12.4.js"></script>
+<script src="https://code.jquery.com/ui/1.12.0/jquery-ui.js"></script>
+<script>
+  var labels = [];
+  var names = [];
+  function getQueries(){
+    var accessToken = Cookies.get("access_token");
+    console.log(accessToken);
+    var hasAuth = (accessToken && accessToken.length > 0) || (tableau.password && tableau.password.length > 0);
+    if (hasAuth)
+    {
+      $.ajax({ 
+      url: "../console/api/bigdata_queries?access_token=" + accessToken,
+      dataType: 'text', 
+      async: false,
+      type: 'GET',
+      beforeSend: function (request)
+      {
+          request.setRequestHeader("Accept", "application/vnd.stellar-v1+json");
+      },
+      success: function (data){
+        var jsonData = JSON.parse(data);
+        var i;
+        for(i=0; i<jsonData.data.bigdata_queries.length; i++)
+        {
+            labels.push(jsonData.data.bigdata_queries[i].label);
+            names.push(jsonData.data.bigdata_queries[i].name);
+        }
+      },
+      error: function()
+      {
+        console.log("ERROR");
+      }
+      });
+    }
+  }
+  getQueries();
+  $( function() {
+    $( "#query-names" ).autocomplete({
+      source: labels
+    });
+  } );
+  </script>
 <script type="text/javascript">
  
 (function() {
@@ -10,20 +63,28 @@
   var myConnector = tableau.makeConnector();
 
   myConnector.init = function () {
+
     tableau.connectionName = 'Stellar API Data';
-    // var tmp = JSON.parse(tableau.connectionData);
-    // tableau.username = tmp.user;
-    // tableau.password = tmp.pass;
-    // tableau.log("user: " + tableau.username + " password: " + tableau.password);
-    //tableau.username = "admin@stellarloyalty.com"
-    //tableau.password = "12345678";
-    //tableau.log(tableau.username);
-    //tableau.alwaysShowAuthUI = true;
-    //tableau.authType = tableau.authTypeEnum.basic;
+    var accessToken = Cookies.get("access_token");
+    //console.log("Access token is '" + accessToken + "'");
+    var hasAuth = (accessToken && accessToken.length > 0) || (tableau.password && tableau.password.length > 0);
+    updateUIWithAuthState(hasAuth);
+
     tableau.initCallback();
-    // if(tableau.phase == tableau.phaseEnum.interactivePhase || tableau.phase == tableau.phaseEnum.authPhase) {
-    //     tableau.submit();
-    // }
+    // If we are not in the data gathering phase, we want to store the token
+    // This allows us to access the token in the data gathering phase
+    if (tableau.phase == tableau.phaseEnum.interactivePhase || tableau.phase == tableau.phaseEnum.authPhase) {
+        if (hasAuth) {
+            tableau.password = accessToken;
+
+            if (tableau.phase == tableau.phaseEnum.authPhase) {
+              // Auto-submit here if we are in the auth phase
+              tableau.submit()
+            }
+
+            return;
+        }
+    }
   };
 
   myConnector.getColumnHeaders = function() {
@@ -59,7 +120,9 @@ function _retrieveCsvData(retrieveDataCallback) {
     if (conData.csvUrl) {
       var successCallback = function(data) 
       {
-        window.cachedTableData = _jsToTable(data.trim());
+
+        var dataJSON = JSON.parse(data);
+        window.cachedTableData = _jsToTable(dataJSON.data.result.trim());
         retrieveDataCallback(window.cachedTableData);
       };
       // Go get the csv data
@@ -67,6 +130,7 @@ function _retrieveCsvData(retrieveDataCallback) {
       return;
     }
     try {
+      tableau.log(csvString);
       window.cachedTableData = _jsToTable(csvString.trim());
     }
     catch (e) {
@@ -86,6 +150,13 @@ function _ajaxRequestHelper(url, successCallback, conUrl, nextFunction, specialS
     url: conUrl,
     dataType: 'text', 
     async: false,
+    type: 'PUT',
+    beforeSend: function (request)
+    {
+        request.setRequestHeader("Accept", "application/vnd.stellar-v1+json");
+        request.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+    },
+    data: "access_token=" + tableau.password,
     success: specialSuccessCallback,
     error: function()
     {
@@ -224,13 +295,23 @@ function _determineType(primitive) {
   return 'string';
 }
 
-function _submitToCsvToTableau(csvString, csvUrl, user, pass) {
-    var conData = {"csvString" : csvString, "csvUrl": csvUrl, "user" : user, "pass" : pass};
+function _submitToCsvToTableau(csvUrl) {
+    var conData = {"csvUrl": csvUrl};
     tableau.connectionData = JSON.stringify(conData);
     tableau.submit();  
 }
 
 $(document).ready(function(){
+  //Cookies.set("access_token","");
+  var accessToken = Cookies.get("access_token");
+  console.log("accessToken " + accessToken)
+  var hasAuth = (accessToken && accessToken.length > 0) || tableau.password;
+  updateUIWithAuthState(hasAuth);
+
+  $("#connectbutton").click(function() {
+          doAuthRedirect();
+      });
+
   var cancel = function (e) {    
       e.stopPropagation();
       e.preventDefault();
@@ -238,92 +319,86 @@ $(document).ready(function(){
   $("#inputForm").submit(function(e) { // This event fires when a button is clicked
     // Since we use a form for input, make sure to stop the default form behavior
     cancel(e);
-    //var csvString = $('textarea[name=csvText]')[0].value.trim();
-    var csvUrl = $('select[name=csvUrl]')[0].value.trim();
-    //var user = $('input[name=user]')[0].value.trim();
-    //var pass = $('input[name=pass]')[0].value.trim();
-    var user = "";
-    var pass = "";
-    var csvString = "";
-    _submitToCsvToTableau(csvString, csvUrl, user, pass);
-  });
-  var ddHandler = $("#dragandrophandler");
-  ddHandler.on('dragenter', function (e) 
-  {
-      cancel(e);
-      $(this).css('border', '2px solid #0B85A1');
-  }).on('dragover', cancel)
-    .on('drop', function (e) 
-  {
-       $(this).css('border', '2px dashed #0B85A1');
-       e.preventDefault();
-       var files = e.originalEvent.dataTransfer.files;
-       var file = files[0];
-       var reader = new FileReader();
-       reader.onload = function(e) { _submitToCsvToTableau(reader.result); };
-       reader.readAsText(file);
-  });
-
-  $(document).on('dragenter', cancel)
-             .on('drop', cancel)
-             .on('dragover', function (e) 
-  {
-    cancel(e);
-    ddHandler.css('border', '2px dashed #0B85A1');
+    var csvUrl = $('input[name=csvUrl]')[0].value.trim() + names[labels.indexOf($('input[name=queryName]')[0].value.trim())] + "/execute";
+    _submitToCsvToTableau(csvUrl);
   });
 });
 
-</script>
-
-<style>
-#dragandrophandler {
-  border:1px dashed #999;
-  width:300px;
-  color:#333;
-  text-align:left;vertical-align:middle;
-  padding:10px 10px 10px 10px;
-  margin:10px;
-  font-size:150%;
+function getURLParameter(name) {
+  return decodeURIComponent((new RegExp('[?|&]' + name + '=' + '([^&;]+?)(&|#|;|$)').exec(location.search) || [null, ''])[1].replace(/\+/g, '%20')) || null;
 }
-</style>
+
+  // An on-click funcion for the connect to foursquare button,
+  // This will redirect the user to a foursquare login
+  function doAuthRedirect() {
+    // var appId = config.clientId;
+    // if (tableau.authPurpose === tableau.authPurposeEnum.ephemerel) {
+    //   appId = config.clientId;
+    // } else if (tableau.authPurpose === tableau.authPurposeEnum.enduring) {
+    //   appId = config.clientId; // This should be the Tableau Server appID
+    // }
+    var clientId = $('input[name=client_id]')[0].value.trim();
+    var clientSecret = $('input[name=client_secret]')[0].value.trim();
+    $.ajax({ 
+    url: "../oauth/token",
+    dataType: 'text', 
+    async: false,
+    type: 'POST',
+    beforeSend: function (request)
+    {
+        request.setRequestHeader("Accept", "application/vnd.stellar-v1+json");
+        request.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+    },
+    data: "grant_type=client_credentials&client_id=" + clientId +
+    "&client_secret=" + clientSecret,
+    success: function(data)
+    {
+      var jsonData = JSON.parse(data);
+      tableau.password = jsonData.access_token;
+      Cookies.set("access_token", jsonData.access_token);
+      updateUIWithAuthState(true);
+      getQueries();
+    }  ,
+    error: function()
+    {
+      console.log("ERROR");
+      alert("ERROR OCCURRED ON AUTHENTICATION");
+    }
+  });
+  }
+
+  function updateUIWithAuthState(hasAuth) {
+      if (hasAuth) {
+          $(".notsignedin").css('display', 'none');
+          $(".signedin").css('display', 'block');
+      } else {
+          $(".notsignedin").css('display', 'block');
+          $(".signedin").css('display', 'none');
+      }
+  }
+</script>
 </head>
 <body>
-
+<!-- The connect to foursquare button will have a link added to it in the js-->
+<div class="signedin">
 <form id="inputForm" action="GET">
-  Select from the queries below:
-  <br>
-  <!--Enter a URL for CSV data: 
-  <input type="text" name="csvUrl" size="170" value='http://localhost:8080/console/analytics/query?queryString={"queryType": "groupByActivity", "measures": [{"name": "Activity Count", "expr": "groupHistoryItems(&#39;count&#39;,[&#39;sl_type&#39;, &#39;sl_subtype&#39;, &#39;sl_context&#39;],{true},&#39;alltime&#39;)", "groupNames": [ "ActivityType", "ActivitySubtype", "ActivityContextx"]}]}&async=false'/>
-  <br>
-  Username:
-  <input type="text" name="user" size="30" value='admin@stellarloyalty.com'/>
-  <br>
-  Password:
-  <input type="password" name="pass" size="20" value='12345678'/>
-  <br>
-  <a href="http://localhost:8080/admin/sign_in">Sign in</a>
-  <div id="dragandrophandler">Or Drag & Drop Files Here</div>
-  <br>
-  Or paste CSV data below
-  <br>
-  <textarea name="csvText" rows="10" cols="70"/></textarea>
-  <input type="submit" value="Submit">-->
-  <select name="csvUrl">
-  <option value='http://localhost:8080/console/analytics/query?queryString={"queryType": "groupByActivity", "measures": [{"name": "Activity Count", "expr": "groupHistoryItems(&#39;count&#39;,[&#39;sl_type&#39;, &#39;sl_subtype&#39;, &#39;sl_context&#39;],{true},&#39;alltime&#39;)", "groupNames": [ "ActivityType", "ActivitySubtype", "ActivityContext"]}]}&async=false'>
-  KPI: Activity Count by Type, Subtype and Context All-time
-  </option>
-  <option value='http://localhost:8080/console/analytics/query?queryString={"queryType":"groupByMember","dimensions":[{"name":"Age","expr":"getAgeGroup()"},{"name":"ActivityperMember","expr":"getActivityGroup()"}],"measures":[{"name":"MemberCount","expr":"1.0"},{"name":"ActivityCount","expr":"getActivityCount()"}]}'>
-  Bigdata Query - Member Explorer: Activities by Age and Engagement
-  </option>
-  <option value='http://localhost:8080/console/analytics/query?queryString={"queryType":"groupByActivity","measures":[{"name":"ActivityCount","expr":"groupHistoryItems(&#39;count&#39;,[&#39;activity_date&#39;],{true},&#39;alltime&#39;)","groupNames":["Date"]}]}'>
-  Bigdata Query - KPI: Activity by Date
-  </option>
-  <option value='http://localhost:8080/console/analytics/query?queryString={%22queryType%22:%22groupByMember%22,%22dimensions%22:[{%22name%22:%22Tier%22,%22expr%22:%22getMemberValue(%27tier%27)%22},{%22name%22:%22Country%22,%22expr%22:%22getMemberValue(%27mailing_country%27)%22}],%22measures%22:[{%22name%22:%22MemberCount%22,%22expr%22:%221.0%22},{%22name%22:%22ActivityCount%22,%22expr%22:%22sumHistoryItems(%27count%27,{true},%27alltime%27)%22}]}'>
-  Bigdata Query - Member Explorer: Member and Activity Count by Country & Tier
-  </option>
-  </select>
+  <input type="text" name="queryName" size="50" value='sl_activity_count_by_type_subtype_and_context_all_time'/>-->
+  <div class="ui-widget">
+  <label for="query-names">Query Name: </label>
+  <input id="query-names" name="queryName" size="50">
+  <input type="hidden" name="csvUrl" value='../console/api/bigdata_queries/'>
   <input type="submit" value="Submit">
-</form>
-
+  </div>
+</form>  
+</div>
+<div class="notsignedin">
+  <p>You are not signed in, kindly authenticate. <a href="#" id="connectbutton">Authenticate</a></p>
+  <label for="client_id">Client ID: </label>
+  <input id="client_id" name="client_id" size="50" value="7723994ca9d50955728a0e575c001c50bc5548ebb19977b2ad08dc99dbcb1758">
+  <br/>
+  <label for="client_secret">Client Secret: </label>
+  <input id="client_secret" name="client_secret" size="50" value="a4403dd07578f7e551dee898af36fe908b855ff7dbbd449ecb4643700ada4bd2">
+</div>
+<br /><br />
 </body>
 </html>
